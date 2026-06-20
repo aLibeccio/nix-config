@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-REPO_FLAKE="github:<GH_USER>/nix-config"
-REPO_HTTPS="https://github.com/<GH_USER>/nix-config.git"
+REPO_FLAKE="github:aLibeccio/nix-config"
+REPO_HTTPS="https://github.com/aLibeccio/nix-config.git"
 
 # 1) 没有 nix 就装 Determinate Nix(非交互),并在当前进程内可用
 if ! command -v nix >/dev/null 2>&1; then
