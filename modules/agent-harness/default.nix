@@ -2,28 +2,47 @@
 let
   home = config.home.homeDirectory;
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
-  # 存在性保护:二进制还没装好时(新机首次 hms,uv/npm 安装尚未完成),
-  # 不要让 launchd 每 ThrottleInterval 就 crash-loop —— 而是轮询等待最多 ~5 分钟,
-  # 二进制一出现立刻 exec;超时才 exit 1 交给 launchd 重试。
-  guarded = bin: argsStr:
-    [ "/bin/sh" "-c" "for _ in $(seq 1 60); do if [ -x \"${bin}\" ]; then exec \"${bin}\" ${argsStr}; fi; sleep 5; done; echo \"[launchd] ${bin} missing after 5min\"; exit 1" ];
+  isLinux = pkgs.stdenv.hostPlatform.isLinux;
+
+  # ── 运行时:Nix 为准(脱钩 Homebrew)──
+  # agentmemory 用 Nix 的 node 跑,并装进 home-manager 自有的 npm 前缀 ~/.npm-global,
+  # 这样守护进程不再依赖 /opt/homebrew 的 node/npm,跨设备可复现、版本可锁。
+  node = pkgs.nodejs_22;
+  npmPrefix = "${home}/.npm-global";
+  amVersion = "0.9.27"; # ← 锁版本;要升级就改这里再 hms
+  amDir = "${npmPrefix}/lib/node_modules/@agentmemory/agentmemory";
+  amEntry = "${amDir}/dist/cli.mjs"; # daemon 入口(node 跑它)
+  amBin = "${npmPrefix}/bin/agentmemory"; # CLI(connect 等用)
+
+  # headroom 走 uv tool(独立 Python venv,与 node 无关),同样锁版本。
+  hrVersion = "0.26.0";
+  hrBin = "${home}/.local/bin/headroom";
+  hrSpec = "headroom-ai[proxy,ml,pytorch-mps]==${hrVersion}";
+
+  # 存在性保护:目标文件(二进制/入口)还没装好时(新机首次 hms,npm/uv 安装尚未完成),
+  # 不让 launchd 每 ThrottleInterval 就 crash-loop —— 轮询等待最多 ~5 分钟,
+  # 文件一出现立刻 exec;超时才 exit 1 交给 launchd 重试。
+  guardedExec = waitFor: cmd:
+    [
+      "/bin/sh"
+      "-c"
+      "for _ in $(seq 1 60); do [ -e \"${waitFor}\" ] && exec ${cmd}; sleep 5; done; echo \"[launchd] ${waitFor} missing after 5min\" >&2; exit 1"
+    ];
 in
 {
-  # ── 跨 agent harness 的两个常驻守护进程(仅 macOS;Linux 用 systemd,这里不定义)──
-  #   agentmemory : Claude Code ↔ Codex 共享记忆(REST :3111)
-  #   headroom    : 上下文压缩 proxy(:8787),让 claude/codex 透明走压缩
-  # 二进制本身不是 nix 包(agentmemory 走 npm -g、headroom 走 uv tool),
-  # 由下方 home.activation 幂等安装;这里只声明 launchd 服务。
+  # ════════════════ macOS:launchd 两个常驻 daemon ════════════════
+  #   agentmemory : Claude Code ↔ Codex 共享记忆(REST :3111)—— Nix node 跑
+  #   headroom    : 上下文压缩 proxy(:8787)—— uv 装的 Python 工具
   launchd.agents = lib.optionalAttrs isDarwin {
     "com.agentmemory.daemon" = {
       enable = true;
       config = {
-        ProgramArguments = guarded "/opt/homebrew/bin/agentmemory" "";
+        ProgramArguments = guardedExec amEntry ''"${node}/bin/node" "${amEntry}"'';
         EnvironmentVariables = {
-          PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+          PATH = "${node}/bin:/usr/bin:/bin:/usr/sbin:/sbin"; # 只给 Nix node,不再含 /opt/homebrew
           HOME = home;
         };
-        WorkingDirectory = home;
+        WorkingDirectory = home; # 记忆库以相对路径 ./data 解析到 ~/data
         RunAtLoad = true;
         KeepAlive = true;
         ThrottleInterval = 10;
@@ -34,9 +53,9 @@ in
     "com.headroom.proxy" = {
       enable = true;
       config = {
-        ProgramArguments = guarded "${home}/.local/bin/headroom" "proxy --port 8787";
+        ProgramArguments = guardedExec hrBin ''"${hrBin}" proxy --port 8787'';
         EnvironmentVariables = {
-          PATH = "${home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+          PATH = "${home}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
           HOME = home;
           HEADROOM_TELEMETRY = "off"; # 关匿名遥测
         };
@@ -50,29 +69,67 @@ in
     };
   };
 
-  # ── 幂等安装二进制 + 注册 MCP + 建日志目录(仅缺失时装,让新机器可复现)──
-  home.activation = lib.optionalAttrs isDarwin {
+  # ════════════════ Linux:systemd user services(同 entrypoint)════════════════
+  # 没有 launchd 的 guarded 轮询;靠 Restart=always 在二进制就绪前不断重试。
+  systemd.user.services = lib.optionalAttrs isLinux {
+    agentmemory = {
+      Unit = {
+        Description = "agentmemory cross-agent memory daemon (:3111)";
+        After = [ "network.target" ];
+      };
+      Service = {
+        ExecStart = "${node}/bin/node ${amEntry}";
+        WorkingDirectory = home;
+        Restart = "always";
+        RestartSec = 10;
+      };
+      Install.WantedBy = [ "default.target" ];
+    };
+    headroom = {
+      Unit.Description = "headroom context-compression proxy (:8787)";
+      Service = {
+        ExecStart = "${hrBin} proxy --port 8787";
+        WorkingDirectory = home;
+        Environment = [ "HEADROOM_TELEMETRY=off" ];
+        Restart = "always";
+        RestartSec = 10;
+      };
+      Install.WantedBy = [ "default.target" ];
+    };
+  };
+
+  # ════════════════ 幂等安装二进制 + 注册 MCP(macOS/Linux 都跑)════════════════
+  # 缺工具时各步 guard 自动 no-op;版本不符才装,所以老机器上重复 hms 基本是 no-op。
+  home.activation = {
     harnessServiceDirs = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       mkdir -p "$HOME/.headroom/logs" "$HOME/.agentmemory"
     '';
-    installHeadroom = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-      if ! [ -x "$HOME/.local/bin/headroom" ]; then
-        echo "[activation] installing headroom via uv (one-time, pulls PyTorch)..."
-        ${pkgs.uv}/bin/uv tool install --python 3.13 "headroom-ai[proxy,ml,pytorch-mps]" || true
-      fi
-    '';
+
+    # agentmemory:用 Nix npm 装进 ~/.npm-global(脱钩 Homebrew),版本不符才装。
     installAgentmemory = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-      if ! command -v agentmemory >/dev/null 2>&1 && [ -x /opt/homebrew/bin/npm ]; then
-        echo "[activation] installing agentmemory via npm -g (one-time)..."
-        /opt/homebrew/bin/npm install -g @agentmemory/agentmemory || true
+      have="$(${node}/bin/node -e 'try{process.stdout.write(require("${amDir}/package.json").version)}catch(e){process.stdout.write("none")}' 2>/dev/null || echo none)"
+      if [ "$have" != "${amVersion}" ]; then
+        echo "[activation] installing @agentmemory/agentmemory@${amVersion} via Nix npm -> ${npmPrefix} (have=$have)..."
+        # 关键:把 Nix node 放进 PATH —— 依赖的 postinstall 脚本会调用裸 `node`(否则 code 127)。
+        PATH="${node}/bin:$PATH" ${node}/bin/npm install -g --prefix "${npmPrefix}" "@agentmemory/agentmemory@${amVersion}" || true
       fi
     '';
-    # 幂等注册整套 harness MCP 到 Claude Code(~/.claude.json)和 Codex(~/.codex/config.toml),
-    # 让新机器 `hms` 自动重建 MCP 拓扑(配置文件本身每机本地,这里用注册动作实现「跟仓库同步」)。
-    # 每条都先 grep 守卫:已存在则跳过,所以老机器上全是 no-op。
+
+    # headroom:uv tool 装(锁版本),版本不符才装(--force 覆盖旧版)。
+    installHeadroom = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      have="$("${hrBin}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+      if [ "$have" != "${hrVersion}" ]; then
+        echo "[activation] installing headroom==${hrVersion} via uv (one-time, pulls PyTorch; have=$have)..."
+        ${pkgs.uv}/bin/uv tool install --force --python 3.13 "${hrSpec}" || true
+      fi
+    '';
+
+    # 幂等注册整套 harness MCP 到 Claude(~/.claude.json)和 Codex(~/.codex/config.toml)。
+    # 用各 agent 的原生 CLI(mcp add / connect),已存在则 grep 守卫跳过 → 老机器全 no-op。
+    # 配置文件本身每机本地,这里用「注册动作」实现跟仓库同步。
     registerHarnessMcps = lib.hm.dag.entryAfter [ "installHeadroom" "installAgentmemory" ] ''
       C="$HOME/.local/bin/claude"; X="$HOME/.local/bin/codex"
-      HR="$HOME/.local/bin/headroom"; AM=/opt/homebrew/bin/agentmemory
+      HR="${hrBin}"; AM="${amBin}"
       CJ="$HOME/.claude.json"; CT="$HOME/.codex/config.toml"
       # agentmemory(记忆)
       if [ -x "$AM" ]; then
