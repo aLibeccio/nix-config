@@ -1,10 +1,7 @@
 { lib, pkgs, ... }:
 let
-  # fzf-tab 自带一个 C 加速模块。nixpkgs 在 macOS 上编出来的是 fzftab.so,
-  # 但 macOS 的 zsh 加载模块用的是 .bundle 后缀 → zmodload 找不到 → 每次开 shell
-  # 都会弹 "fzftab module needs to be rebuild?[Y/n]"(只读的 nix store 也无法重建)。
-  # 这里直接去掉该模块,改用 fzf-tab 自带的纯 zsh 回退:补全/着色一切正常,
-  # 仅超大候选列表渲染略慢。好处是系统/brew/nix 的 zsh、macOS/Linux 上都不会再弹提示。
+  # 去掉 fzf-tab 的 C 加速模块:macOS 上加载不了、每次开 shell 都弹重建提示,
+  # 改用纯 zsh 回退。
   fzfTab = pkgs.zsh-fzf-tab.overrideAttrs (old: {
     postInstall = (old.postInstall or "") + ''
       rm -rf "$out/share/fzf-tab/modules"
@@ -55,8 +52,7 @@ in
         export PATH="$HOME/.local/bin:$PATH"
 
         # ── fzf-tab:把 Tab 补全菜单换成 fzf 模糊选择 ──
-        # 这段在 compinit(oh-my-zsh)之后、zsh-syntax-highlighting 之前执行,
-        # 正好满足 fzf-tab 的加载顺序要求;候选仍由 carapace 等提供,fzf-tab 只接管菜单 UI。
+        # 须在 compinit 之后、syntax-highlighting 之前加载(fzf-tab 的顺序要求)。
         source ${fzfTab}/share/fzf-tab/fzf-tab.plugin.zsh
         # 关掉 zsh 原生菜单,交给 fzf-tab(必须,否则会先弹原生菜单/抢不到补全)
         zstyle ':completion:*' menu no
@@ -74,9 +70,7 @@ in
         zstyle ':fzf-tab:*' fzf-flags --height=60%
 
         # ── codex(Codex CLI)补全 ──
-        # codex 自带 `codex completion zsh`(clap 生成,随版本自动更新)。这里缓存到文件,
-        # 仅当 codex 二进制比缓存新时才重新生成,平时只 source,不必每次开 shell 都跑 codex。
-        # 没装 codex 的机器自动跳过;补全照样走 fzf-tab 模糊菜单。
+        # 缓存到文件,避免每次开 shell 都跑 codex 生成补全;codex 更新后才重建。
         if (( $+commands[codex] )); then
           _codex_comp="''${XDG_CACHE_HOME:-$HOME/.cache}/zsh/codex-completion.zsh"
           if [[ ! -s $_codex_comp || $commands[codex] -nt $_codex_comp ]]; then
@@ -88,21 +82,15 @@ in
         fi
 
         # ── headroom：让 claude / codex 透明走上下文压缩代理（省 token）──
-        # 复用 launchd 常驻的 headroom proxy(:8787)；记忆仍归 agentmemory(headroom 自身 memory 不开)。
-        # 逃生：HEADROOM_OFF=1 claude ...  → 走原生、不压缩。
-        # 仅当 headroom 装好时才定义,没装的机器自动跳过(plain claude/codex)。
+        # 逃生:HEADROOM_OFF=1 claude ... → 走原生、不压缩。
         if (( $+commands[headroom] )); then
           export HEADROOM_TELEMETRY=off   # 关掉匿名遥测(与 launchd daemon 一致)
-          # claude：纯环境变量直连常驻 proxy(:8787)。实测比每次 `headroom wrap` 快 ~4.7×
-          # (37ms vs 175ms),且零额外子进程。压缩在 proxy 侧发生,CCR 取回靠 headroom MCP。
+          # claude：纯环境变量直连常驻 proxy(:8787),省去每次 wrap 的开销。
           claude() {
             [ -n "$HEADROOM_OFF" ] && { command claude "$@"; return; }
             ANTHROPIC_BASE_URL=http://127.0.0.1:8787 command claude "$@"
           }
-          # codex：靠注入 ~/.codex/config.toml 的 provider 路由(codex 无视 OPENAI_BASE_URL,
-          # 必须用 config provider)。直接跑比每次 wrap 快 ~7.7×(21ms vs 161ms),且避免每次
-          # 重写 config 的并发竞态。下面仅在 provider 缺失(被 HEADROOM_OFF unwrap / 新机器)时
-          # 才补注入一次(同时注册 headroom MCP)。
+          # codex：必须用 config provider 路由,缺失时补注入一次,省去每次 wrap 的开销。
           codex() {
             if [ -n "$HEADROOM_OFF" ]; then command headroom unwrap codex >/dev/null 2>&1; command codex "$@"; return; fi
             grep -q 'model_provider = "headroom"' "$HOME/.codex/config.toml" 2>/dev/null \

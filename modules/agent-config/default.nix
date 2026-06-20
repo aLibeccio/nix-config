@@ -1,34 +1,9 @@
 { config, lib, pkgs, ... }:
-# ─────────────────────────────────────────────────────────────────────────────
-# agent-config —— 声明式管理 Claude Code / Codex 里「可复现的配置切片」
-#
-# 为什么只注入切片、不整文件接管:
-#   Claude/Codex 的配置文件把「我们关心的少数配置」和「大量机器本地状态/密钥」
-#   混在一起,整文件托管会把机器状态也塞进公开同步的 git 仓库,或在 hms 时把
-#   别处写入的状态冲掉。所以这里用幂等 activation 脚本,只「注入并校正」我们
-#   在意的那几个 key,其余字节原样不动。
-#
-#   ~/.claude/settings.json   小,基本是配置,但仍含 skipDangerousModePermissionPrompt
-#                             这类本地开关 —— 我们只动 enabledPlugins.superpowers 和 theme。
-#   ~/.claude.json            几十个 key:oauthAccount(密钥)、projects、history…
-#                             —— 本模块完全不碰(MCP 注册也在 agent-harness 里做)。
-#   ~/.codex/config.toml      含 model / model_reasoning_effort(配置)+ headroom proxy
-#                             注入块 + [mcp_servers.*](由 agent-harness 注册)+
-#                             [projects."<abs-path>"].trust_level(机器本地、跟绝对路径
-#                             绑定)+ [marketplaces.*].last_updated(时间戳状态)。
-#
-#   明确「不纳入」的机器状态/由别处管理的项:
-#     • MCP server 注册(agentmemory/headroom/context7/kubernetes)—— 已在
-#       modules/agent-harness 用原生 `claude mcp add` / `codex mcp add` 做,本模块不重复。
-#     • Codex trust_level —— 跟本机绝对路径(~/.../<user>)绑定,换机器路径就变,不可复现。
-#     • headroom proxy / model_provider 注入块 —— 由 headroom 自己的 wrap 动作维护。
-#     • oauthAccount / history / projects / marketplaces 时间戳 —— 纯机器状态。
-#
-# 幂等:每步先读取/比较当前值,已满足则完全 no-op(不写文件、不动 mtime)。
-#       老机器上重复 `hms` 不应改动任何配置文件。
-# 跨平台:纯配置文件注入,macOS / Linux 都可跑。用文件存在性 + 二进制可执行性守卫;
-#         没建过 ~/.codex/config.toml(或 jq 不可用)的机器对应步骤自动跳过。
-# ─────────────────────────────────────────────────────────────────────────────
+# agent-config —— 幂等注入 Claude Code / Codex 配置里我们关心的少数 key。
+# 为什么只注入切片、不接管整文件:这些配置文件把少量配置和大量机器本地状态/密钥
+# 混在一起,整文件托管会把状态塞进公开仓库、或冲掉别处的写入。所以只校正在意的几个
+# key,其余字节原样不动;MCP 注册、trust_level、proxy 注入块等机器状态由别处管理。
+# 每步先比较现值,已满足则 no-op(不写盘、不动 mtime);macOS / Linux 通用。
 let
   jq = "${pkgs.jq}/bin/jq";
 
@@ -89,23 +64,9 @@ in
     '';
 
     # ── 2. Codex ~/.codex/config.toml ────────────────────────────────────────
-    # 确保 model 与 model_reasoning_effort 存在 —— 但「只在完全缺失时才补默认」。
-    # 取舍说明:
-    #   * 用户对 model / reasoning effort 的选择是强主观偏好,一旦文件里已有任何值
-    #     (哪怕跟我们默认不同)就尊重它、绝不覆盖 → 保证老机器上 hms 是 no-op。
-    #   * 只有当 key 在顶层完全缺失时,才补一个保守默认,使「全新机器」也有可用配置。
-    #   * trust_level 等跟绝对路径绑定的机器本地配置不在此注入(见顶部注释)。
-    #
-    # 为什么用 grep 守卫 + 顶部插入,而不是 dasel/toml 编辑:
-    #   本机 dasel 是 v3,它把写功能(v1/v2 的 `dasel put`)整个移除了,只剩 query 只读;
-    #   所以无法用 dasel 写 TOML。改用 POSIX 工具:grep 探测顶层赋值,缺失时把
-    #   `key = "val"` 插到文件最顶端 —— TOML 规定顶层(table 外)键值必须出现在第一个
-    #   [table] 头之前,而本文件开头本就是注释/键值区,故「插到最顶端」是唯一合法位置
-    #   (追加到 EOF 会落在 [mcp_servers.*] 等表之后,变成非法的顶层键)。整段既有内容
-    #   原样保留在新键之后。
-    #   守卫正则 `^[[:space:]]*KEY[[:space:]]*=`:KEY 后必须紧跟空白或 `=`,故
-    #   `model` 不会误命中 `model_provider`/`model_reasoning_effort`;行首锚定 + 要求
-    #   `=`,故 `[model_providers.headroom]` 这类表头、`# model = ...` 注释也不会误命中。
+    # 确保 model 与 model_reasoning_effort 存在;只在顶层完全缺失时补默认,绝不覆盖已有值。
+    # 用 grep 守卫 + 顶部插入而非 dasel:dasel v3 移除了写功能,只读;且 TOML 顶层键必须
+    # 出现在第一个 [table] 之前,故插到文件最顶端是唯一合法位置。
     # 若 config.toml 不存在则不创建(Codex 首次运行会自建;我们不抢先造一个半成品)。
     codexConfigSlice = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       CONFIG="$HOME/.codex/config.toml"

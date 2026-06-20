@@ -6,10 +6,7 @@ let
   brewfileDest = ".config/homebrew/Brewfile";
 in
 # ── Homebrew 模块(仅 macOS)──
-#   定位:让 Homebrew 退化成「只管 GUI cask / 字体」的工具,运行时全部交给 Nix。
-#   Linux 上整个模块是 no-op(lib.optionalAttrs isDarwin 把两块配置都收成空集),
-#   因为 Homebrew 本身就是 macOS-only,Linux 的字体改由 home/packages.nix 里的
-#   pkgs.nerd-fonts.meslo-lg 提供。
+#   Homebrew 只管 GUI cask / 字体,运行时交给 Nix。Linux 是 no-op。
 {
   # 把仓库里的 Brewfile 软链到 ~/.config/homebrew/Brewfile,作为 brew bundle 的唯一真相源。
   # 注:optionalAttrs 必须放在 value 里(home.file / home.activation 等顶层 key 固定),
@@ -28,13 +25,8 @@ in
         # 注入 brew 的 shellenv(补 PATH/HOMEBREW_* 环境),再做 bundle。
         eval "$("''${BREW}" shellenv)"
         echo "[activation] brew bundle (cask/字体, --no-upgrade)..."
-        # --no-upgrade:已声明且已装的东西保持原状、不主动升级 → 老机器上整体 no-op,
-        #              升级动作交给用户显式 `brew upgrade`,避免每次 hms 偷偷拉新版。
-        # 刻意 *不* 加 --cleanup:那会卸载所有未在 Brewfile 里声明的 brew 包
-        #   (含旧的 node/python/go/mise/gh),太激进。迁移到 Nix 后想清理这些旧 formula,
-        #   请自行手动 `brew uninstall node python@3.14 go mise gh` 等,本模块不强制。
-        # 直接喂 Nix store 里的 Brewfile(总是存在),避开「activation 早于 linkGeneration、
-        # ~/.config/homebrew/Brewfile 软链还没建好」的时序坑。用户侧那份软链仍由 home.file 提供。
+        # --no-upgrade:已装即 no-op,升级留给用户显式 `brew upgrade`。不加 --cleanup 避免误卸载。
+        # 直接用 Nix store 路径,避开 activation 早于 linkGeneration 导致软链未就绪的时序问题。
         "''${BREW}" bundle --file=${./Brewfile} --no-upgrade || \
           echo "[activation] brew bundle 失败(忽略,不阻断 hms)"
       else

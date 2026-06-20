@@ -68,7 +68,6 @@
 
       # 语言运行时 —— Nix 为准(取代 Homebrew 的 node/go/python;见 modules/homebrew)。
       # agent harness 的 agentmemory daemon 直接用 ${pkgs.nodejs_22},这里再放一份给交互/npx 用。
-      # 迁移后可 `brew uninstall node go golangci-lint python@3.14 python@3.13` 清理 brew 残留。
       nodejs_22 # Node.js LTS(+ npm/npx)
       go # Go 工具链
       golangci-lint # Go linter(原 brew formula)
