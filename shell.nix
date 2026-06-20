@@ -4,6 +4,11 @@
   programs.zsh = {
     enable = true;
 
+    # 补全 / 交互增强
+    enableCompletion = true; # zsh 补全系统(默认开,显式写更清楚)
+    autosuggestion.enable = true; # 灰字行内建议(来自历史),按 → 接受
+    syntaxHighlighting.enable = true; # 命令语法高亮(错命令标红)
+
     # 保留你原来的 oh-my-zsh(git 插件;主题留空,提示符交给 starship)
     oh-my-zsh = {
       enable = true;
@@ -57,5 +62,11 @@
   programs.direnv = {
     enable = true;
     nix-direnv.enable = true; # 进入含 .envrc 的目录自动加载 Nix devShell
+  };
+
+  # ── carapace:给 1000+ 个 CLI 提供 子命令/参数/flag 的 Tab 补全 ──
+  programs.carapace = {
+    enable = true;
+    enableZshIntegration = true;
   };
 }

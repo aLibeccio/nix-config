@@ -114,7 +114,7 @@
 
 ## Shell / 导航（含已接 shell 集成的）
 
-> 集成快捷键:**Ctrl-R** atuin 历史 · **Ctrl-T** fzf 选文件 · **Alt-C** fzf 进目录 · **`z 关键词`** zoxide 跳转
+> 快捷键:**Ctrl-R** atuin 历史 · **Ctrl-T** fzf 选文件 · **Alt-C** fzf 进目录 · **`z 关键词`** zoxide 跳转 · **Tab** 参数补全(carapace)· **→** 接受灰字建议
 
 - **`fzf`** —— 模糊查找器 · `Ctrl-T` 选文件、`Alt-C` 进目录、`命令 | fzf` · 任何"从一个列表里挑一个"
 - **`zoxide`** —— 智能 `cd` · `z proj`、`zi` · 按访问频率记忆目录,几个字母跳过去
@@ -126,6 +126,9 @@
 - **`tldr`** (tealdeer) —— 命令精简示例 · `tldr tar`、`tldr ffmpeg` · 忘了某命令怎么用,看几个实用例子(比 man 快)
 - **`navi`** —— 交互式命令速查表 · `navi` · 忘了参数时交互式查/填
 - **`rtk`** —— 减少 LLM token 的 CLI 代理 · 包裹常见 dev 命令 · 配合 AI 编码工具省 token
+- **`carapace`** —— 给 1000+ 个 CLI 提供 子命令/参数/flag 的 Tab 补全 · 装好直接按 Tab · 任何命令都想要参数补全时
+
+> zsh 还开了 **autosuggestions**(灰字历史建议,`→` 接受)和 **syntax-highlighting**(命令边打边高亮),配置在 `shell.nix`。Nix 装的工具大多自带补全,carapace 再统一补强。
 
 ## 编辑器
 
