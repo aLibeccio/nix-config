@@ -54,6 +54,10 @@ in
       export NPM_CONFIG_PREFIX="$HOME/.npm-global"
       export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 
+      # Claude Code:默认把推理 effort 拉到 max(只能用环境变量,写不进 settings.json:
+      # effortLevel 封顶 xhigh,max 是 session-only)。
+      export CLAUDE_CODE_EFFORT_LEVEL="max"
+
       # Drop stale terminfo dirs inherited from parent shells.
       if [[ -n "''${TERMINFO_DIRS:-}" ]]; then
         _terminfo_dirs=("''${(@s/:/)TERMINFO_DIRS}")

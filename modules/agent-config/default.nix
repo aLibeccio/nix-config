@@ -6,7 +6,7 @@ let
 
   # Only fill missing Codex defaults.
   codexDefaultModel = "gpt-5.5";
-  codexDefaultReasoningEffort = "medium";
+  codexDefaultReasoningEffort = "xhigh";
 in
 {
   home.activation = {
