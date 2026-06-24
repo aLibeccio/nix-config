@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   home = config.home.homeDirectory;
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
@@ -12,18 +17,19 @@ let
   amEntry = "${amDir}/dist/cli.mjs"; # daemon entry
   amBin = "${npmPrefix}/bin/agentmemory"; # CLI entry
 
+  kubernetesMcpSpec = "kubernetes-mcp-server@0.0.63";
+
   # headroom uv-tool version.
   hrVersion = "0.26.0";
   hrBin = "${home}/.local/bin/headroom";
   hrSpec = "headroom-ai[proxy,ml,pytorch-mps]==${hrVersion}";
 
   # launchd waits for first install before exec.
-  guardedExec = waitFor: cmd:
-    [
-      "/bin/sh"
-      "-c"
-      "for _ in $(seq 1 60); do [ -e \"${waitFor}\" ] && exec ${cmd}; sleep 5; done; echo \"[launchd] ${waitFor} missing after 5min\" >&2; exit 1"
-    ];
+  guardedExec = waitFor: cmd: [
+    "/bin/sh"
+    "-c"
+    "for _ in $(seq 1 60); do [ -e \"${waitFor}\" ] && exec ${cmd}; sleep 5; done; echo \"[launchd] ${waitFor} missing after 5min\" >&2; exit 1"
+  ];
 in
 {
   # macOS launchd daemons.
@@ -127,6 +133,7 @@ in
       # Probe common codex locations.
       X=""; for c in "$HOME/.npm-global/bin/codex" "$HOME/.local/bin/codex" "$(command -v codex 2>/dev/null)" /opt/homebrew/bin/codex /usr/local/bin/codex; do [ -n "$c" ] && [ -x "$c" ] && { X="$c"; break; }; done
       HR="${hrBin}"; AM="${amBin}"
+      K8S_MCP_SPEC="${kubernetesMcpSpec}"
       CJ="$HOME/.claude.json"; CT="$HOME/.codex/config.toml"
       # agentmemory(记忆)
       if [ -x "$AM" ]; then
@@ -139,19 +146,19 @@ in
       if [ -x "$C" ]; then
         grep -q '"context7"' "$CJ" 2>/dev/null || "$C" mcp add -s user context7 -- npx -y @upstash/context7-mcp >/dev/null 2>&1 || true
         if ! grep -q '"kubernetes"' "$CJ" 2>/dev/null; then
-          "$C" mcp add -s user kubernetes -- npx -y kubernetes-mcp-server@latest >/dev/null 2>&1 || true
-        elif grep -q '"--read-only"' "$CJ" 2>/dev/null; then   # repair read-only registration
+          "$C" mcp add -s user kubernetes -- npx -y "$K8S_MCP_SPEC" >/dev/null 2>&1 || true
+        elif grep -q '"--read-only"' "$CJ" 2>/dev/null || grep -q 'kubernetes-mcp-server@latest' "$CJ" 2>/dev/null; then   # repair stale registration
           "$C" mcp remove -s user kubernetes >/dev/null 2>&1 || true
-          "$C" mcp add -s user kubernetes -- npx -y kubernetes-mcp-server@latest >/dev/null 2>&1 || true
+          "$C" mcp add -s user kubernetes -- npx -y "$K8S_MCP_SPEC" >/dev/null 2>&1 || true
         fi
       fi
       if [ -x "$X" ]; then
         grep -q 'mcp_servers.context7' "$CT" 2>/dev/null || "$X" mcp add context7 -- npx -y @upstash/context7-mcp >/dev/null 2>&1 || true
         if ! grep -q 'mcp_servers.kubernetes' "$CT" 2>/dev/null; then
-          "$X" mcp add kubernetes -- npx -y kubernetes-mcp-server@latest >/dev/null 2>&1 || true
-        elif grep -q -- '--read-only' "$CT" 2>/dev/null; then   # repair read-only registration
+          "$X" mcp add kubernetes -- npx -y "$K8S_MCP_SPEC" >/dev/null 2>&1 || true
+        elif grep -q -- '--read-only' "$CT" 2>/dev/null || grep -q 'kubernetes-mcp-server@latest' "$CT" 2>/dev/null; then   # repair stale registration
           "$X" mcp remove kubernetes >/dev/null 2>&1 || true
-          "$X" mcp add kubernetes -- npx -y kubernetes-mcp-server@latest >/dev/null 2>&1 || true
+          "$X" mcp add kubernetes -- npx -y "$K8S_MCP_SPEC" >/dev/null 2>&1 || true
         fi
       fi
     '';
